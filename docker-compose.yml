@@ -28,7 +28,7 @@ services:
   # SproutAI Gateway Service
   # --------------------------------------------------------
   gateway:
-    image: ghcr.io/sproutlogix/sproutai-gateway:latest
+    image: ghcr.io/sproutlogix/ai_gateway_core:latest
     container_name: sproutai-gateway
     restart: unless-stopped
     ports:

@@ -38,7 +38,7 @@ This public repository contains deployment configurations and setup scripts for 
 
 ### Step 1: Clone Repository
 ```bash
-git clone [https://github.com/sproutlogix/sproutai-gateway.git](https://github.com/sproutlogix/sproutai-gateway.git)
+git clone https://github.com/Sproutlogix/sproutai-gateway.git
 cd sproutai-gateway
 ```
 
@@ -138,7 +138,7 @@ Grant your `ecsTaskExecutionRole` permission to read secrets:
   "containerDefinitions": [
     {
       "name": "sproutai-gateway",
-      "image": "ghcr.io/sproutlogix/sproutai-gateway:latest",
+      "image": "ghcr.io/sproutlogix/ai_gateway_core:latest",
       "essential": true,
       "portMappings": [{ "containerPort": 8000, "hostPort": 8000 }],
       "environment": [
