@@ -17,7 +17,7 @@
 
 ## 📁 Repository Structure
 
-This public repository contains deployment configurations and setup scripts for running the **SproutAI Gateway** container image (`ghcr.io/sproutlogix/sproutai-gateway:latest`):
+This public repository contains deployment configurations and setup scripts for running the **SproutAI Gateway** container image (`ghcr.io/sproutlogix/ai_gateway_core:latest`):
 
 ```text
 .
