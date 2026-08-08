@@ -1,0 +1,51 @@
+version: '3.8'
+
+services:
+  # --------------------------------------------------------
+  # Database Service (MySQL)
+  # --------------------------------------------------------
+  db:
+    image: mysql:8.0
+    container_name: sproutai-mysql
+    restart: unless-stopped
+    # Pulls database credentials directly from your .env file
+    environment:
+      MYSQL_DATABASE: ${MYSQL_DATABASE}
+      MYSQL_USER: ${MYSQL_USER}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_PASSWORD}_root # Auto-generates a root password
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # --------------------------------------------------------
+  # SproutAI Gateway Service
+  # --------------------------------------------------------
+  gateway:
+    image: ghcr.io/sproutlogix/sproutai-gateway:latest
+    container_name: sproutai-gateway
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    # Loads all API keys, peppers, and settings from the .env file
+    env_file:
+      - .env
+    environment:
+      # Overrides the MYSQL_HOST in .env to use the internal Docker network
+      MYSQL_HOST: db
+    depends_on:
+      db:
+        condition: service_healthy
+
+# --------------------------------------------------------
+# Persistent Storage Volumes
+# --------------------------------------------------------
+volumes:
+  mysql_data:
+    name: sproutai_mysql_data
