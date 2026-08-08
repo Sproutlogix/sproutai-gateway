@@ -209,7 +209,7 @@ The SproutAI Gateway container is **100% free for commercial use**. For enterpri
 * **Custom Gateway Plugins:** Proprietary middleware development, token rate limiting rules, and internal SSO/OAuth2 integrations.
 * **Private RAG & Fine-Tuning:** In-house vector database deployment, pipeline construction, and enterprise security reviews.
 
-📧 **Get in touch:** [https://sproutlogix.com](https://sproutlogix.com)
+📧 **Get in touch:** [https://sproutlogix.com/contact-us](https://sproutlogix.com/contact-us)
 
 ---
 
