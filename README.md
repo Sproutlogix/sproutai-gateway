@@ -76,7 +76,7 @@ curl http://localhost:8000/api/health
 | Variable Name | Description | Default | Required |
 | :--- | :--- | :--- | :--- |
 | `ENVIRONMENT` | Deployment mode (`dev`, `production`) | `dev` | Yes |
-| `GATEWAY_NAME` | Identifier for the gateway instance | `napier-ai-gateway` | Yes |
+| `GATEWAY_NAME` | Identifier for the gateway instance | `sprout-ai-gateway` | Yes |
 | `MYSQL_HOST` | Database host IP / domain | `localhost` | Yes |
 | `MYSQL_PORT` | Database port | `3306` | Yes |
 | `MYSQL_DATABASE` | Database name | `sproutai_db` | Yes |
