@@ -1,11 +1,15 @@
-version: '3.8'
+# Sprout AI Gateway: the gateway (API + web UI in one container) and a MySQL database.
+#   cp .env.example .env     # or: sudo ./install.sh
+#   docker compose up -d
+# Then open http://localhost:8000 and sign in with ADMIN_EMAIL / ADMIN_PASSWORD from .env.
 
 services:
   # --------------------------------------------------------
   # Database Service (MySQL)
   # --------------------------------------------------------
   db:
-    image: mysql:8.0
+    # MySQL 8.4 LTS. Existing 8.0 data is upgraded automatically on first start (back it up first).
+    image: mysql:8.4
     container_name: sproutai-mysql
     restart: unless-stopped
     # Pulls database credentials directly from your .env file
@@ -13,32 +17,35 @@ services:
       MYSQL_DATABASE: ${MYSQL_DATABASE}
       MYSQL_USER: ${MYSQL_USER}
       MYSQL_PASSWORD: ${MYSQL_PASSWORD}
-      MYSQL_ROOT_PASSWORD: ${MYSQL_PASSWORD}_root # Auto-generates a root password
-    ports:
-      - "3306:3306"
+      MYSQL_ROOT_PASSWORD: ${MYSQL_PASSWORD}_root # Derived from MYSQL_PASSWORD
+    # The database is only reachable from the gateway, on the internal Docker network.
+    # To connect from the host, uncomment this (use a free port if MySQL also runs on the host):
+    # ports:
+    #   - "127.0.0.1:3307:3306"
     volumes:
       - mysql_data:/var/lib/mysql
     healthcheck:
       test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
       interval: 10s
       timeout: 5s
-      retries: 5
+      retries: 10
 
   # --------------------------------------------------------
-  # SproutAI Gateway Service
+  # Sprout AI Gateway Service (API + web UI)
   # --------------------------------------------------------
   gateway:
-    image: ghcr.io/sproutlogix/ai_gateway_core:latest
+    image: ghcr.io/sproutlogix/ai_gateway_core:${GATEWAY_VERSION:-latest}
     container_name: sproutai-gateway
     restart: unless-stopped
     ports:
-      - "8000:8000"
-    # Loads all API keys, peppers, and settings from the .env file
+      - "${GATEWAY_PORT:-8000}:8000"
+    # Loads provider keys, the first admin account, SMTP and other settings from .env
     env_file:
       - .env
     environment:
-      # Overrides the MYSQL_HOST in .env to use the internal Docker network
+      # Use the bundled database on the internal Docker network
       MYSQL_HOST: db
+      MYSQL_PORT: "3306"
     depends_on:
       db:
         condition: service_healthy

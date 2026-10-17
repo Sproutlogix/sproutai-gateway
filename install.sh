@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 
 # ==============================================================================
-# SproutAI Gateway - MySQL & Environment Auto-Installer
+# Sprout AI Gateway - MySQL & Environment Auto-Installer
 # ==============================================================================
 # Description: Installs MySQL server, generates secure credentials, creates
-#              default API keys & JSON schema, and updates .env.
+#              the first admin login, and updates .env.
 # ==============================================================================
 
 set -euo pipefail
@@ -64,7 +64,7 @@ if ! systemctl is-active --quiet mysql; then
     systemctl start mysql
 fi
 
-# --- Step 2: Generate Credentials & API Keys ---
+# --- Step 2: Generate Credentials ---
 DB_NAME="sproutai_db"
 DB_USER="sproutai_user"
 DB_HOST="localhost"
@@ -72,20 +72,7 @@ DB_PORT="3306"
 DB_PASSWORD=$(generate_random_string 32)
 PEPPER_SECRET=$(generate_random_string 32)
 
-# Generate a default Gateway API key with prefix
-RANDOM_KEY_SUFFIX=$(generate_random_string 24)
-DEFAULT_API_KEY="sproutai-dev-${RANDOM_KEY_SUFFIX}"
-
-# Construct the API_KEYS_JSON payload matching your schema
-API_KEYS_JSON_RAW=$(cat <<EOF
-{"${DEFAULT_API_KEY}":{"team":"Technology","application":"POC","monthly_budget_usd":100,"allowed_models":["claude-sonnet-5","claude-sonnet-4.6","claude-sonnet-3.5","claude-haiku-4.5","gpt-4o","gpt-4o-mini","gpt-5.4","gpt-5.5"]}}
-EOF
-)
-
-# Minify JSON string (remove newlines)
-API_KEYS_JSON=$(echo "$API_KEYS_JSON_RAW" | tr -d '\n')
-
-log_info "Generated database credentials, pepper, and default API key: ${DEFAULT_API_KEY}"
+log_info "Generated database credentials and pepper."
 
 # --- Step 3: Configure Database & User in MySQL ---
 log_info "Configuring MySQL database and privileges..."
@@ -126,30 +113,44 @@ set_env_var "MYSQL_USER" "$DB_USER"
 set_env_var "MYSQL_PASSWORD" "$DB_PASSWORD"
 set_env_var "API_KEY_HASH_PEPPER" "$PEPPER_SECRET"
 
-# Write Gateway API Key settings
-set_env_var "API_KEYS_JSON" "$API_KEYS_JSON"
-set_env_var "VITE_GATEWAY_API_KEY" "$DEFAULT_API_KEY"
-set_env_var "GATEWAY_UI_API_KEY" "$DEFAULT_API_KEY"
+# First admin account for the web UI (only used when the gateway has no users yet).
+# Keep an existing password unless it is still the placeholder.
+CURRENT_ADMIN_PASSWORD=$(grep -E "^ADMIN_PASSWORD=" "$ENV_FILE" | cut -d= -f2- || true)
+if [ -z "$CURRENT_ADMIN_PASSWORD" ] || [[ "$CURRENT_ADMIN_PASSWORD" == \<* ]]; then
+    ADMIN_PASSWORD=$(generate_random_string 20)
+    set_env_var "ADMIN_PASSWORD" "$ADMIN_PASSWORD"
+else
+    ADMIN_PASSWORD="(unchanged, see ADMIN_PASSWORD in .env)"
+fi
+ADMIN_EMAIL=$(grep -E "^ADMIN_EMAIL=" "$ENV_FILE" | cut -d= -f2- || true)
+if [ -z "$ADMIN_EMAIL" ]; then
+    ADMIN_EMAIL="admin@example.com"
+    set_env_var "ADMIN_EMAIL" "$ADMIN_EMAIL"
+fi
 
 log_info ".env file successfully configured!"
 
 # --- Step 5: Final Summary ---
 echo ""
 echo -e "${GREEN}======================================================================${NC}"
-echo -e "${GREEN}      Installation & Gateway Key Generation Complete!                  ${NC}"
+echo -e "${GREEN}      Installation Complete!                                           ${NC}"
 echo -e "${GREEN}======================================================================${NC}"
 echo ""
 echo "Configured Settings in .env:"
 echo "  - MYSQL_DATABASE:       $DB_NAME"
 echo "  - MYSQL_USER:           $DB_USER"
-echo "  - DEFAULT API KEY:      $DEFAULT_API_KEY"
-echo "  - VITE_GATEWAY_API_KEY: $DEFAULT_API_KEY"
-echo "  - GATEWAY_UI_API_KEY:   $DEFAULT_API_KEY"
+echo "  - ADMIN_EMAIL:          $ADMIN_EMAIL"
+echo "  - ADMIN_PASSWORD:       $ADMIN_PASSWORD"
 echo ""
 echo -e "${YELLOW}Next Steps:${NC}"
-echo "1. Open .env and add your provider API keys (OPENAI_API_KEY, ANTHROPIC_API_KEY, etc.):"
+echo "1. Open .env and add your provider API keys (OPENAI_API_KEY, ANTHROPIC_API_KEY, etc.)"
+echo "   and, optionally, SMTP settings for usage alert emails:"
 echo "   nano .env"
 echo ""
 echo "2. Start the gateway containers:"
 echo "   docker compose up -d"
+echo ""
+echo "3. Open http://localhost:8000, sign in as $ADMIN_EMAIL and change the password."
+echo ""
+echo "4. Add model routes, then create gateway API keys under API Keys."
 echo ""
