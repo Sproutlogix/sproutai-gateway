@@ -30,6 +30,7 @@ This public repository contains deployment configurations and setup scripts for 
 .
 ├── docker-compose.yml     # Gateway + MySQL container definition
 ├── docker-compose.external-db.yml  # Gateway only, for a MySQL server you run yourself
+├── docker-compose.host-network.yml # Linux add-on: reach MySQL on the same machine at 127.0.0.1
 ├── .env.example           # Environment configuration template
 ├── install.sh             # Installer: writes .env (secrets, admin login, database); --upgrade adds new settings
 └── README.md              # Deployment & usage documentation
@@ -57,7 +58,7 @@ cd ai-gateway
 | :--- | :--- | :--- |
 | **Add a MySQL container to docker compose** (default) | A MySQL 8.4 container with its data in the `sproutai_mysql_data` volume | Gateway + MySQL |
 | **Install MySQL Server on this machine** (Ubuntu/Debian, needs `sudo`) | MySQL from apt, with the database and user created for you | Gateway only |
-| **Use a MySQL server you already run** (RDS, Azure, another host) | Asks for the host, port, database, user and password. The database and user must already exist. | Gateway only |
+| **Use a MySQL server you already run** (RDS, Azure, another host, or MySQL on your Mac) | Asks for the host, port, database, user and password. The database and user must already exist. | Gateway only |
 
 ```bash
 chmod +x install.sh
@@ -65,7 +66,15 @@ chmod +x install.sh
 sudo ./install.sh --mysql host   # or choose up front: --mysql docker | host | existing
 ```
 
-Without the MySQL container, the installer sets `COMPOSE_FILE=docker-compose.external-db.yml` in `.env`, so `docker compose` uses the gateway-only file. That file uses host networking, which needs Linux. Re-running the installer keeps the existing database password, API key pepper and admin password, and adds any settings that are new in `.env.example` (see [Upgrading](#-upgrading)).
+Without the MySQL container, the installer sets `COMPOSE_FILE` in `.env`, so `docker compose` uses the gateway-only file instead of `docker-compose.yml`. Inside the gateway container, `localhost` is the container itself, so when MySQL runs on the same machine (you enter `localhost` or `127.0.0.1`) the installer sets up the connection for your OS:
+
+| Where MySQL runs | `MYSQL_HOST` | `COMPOSE_FILE` |
+| :--- | :--- | :--- |
+| Same machine, macOS or Windows (Docker Desktop) | `host.docker.internal` | `docker-compose.external-db.yml` |
+| Same machine, Linux | `127.0.0.1` | `docker-compose.external-db.yml:docker-compose.host-network.yml` (host networking, so MySQL can keep listening on localhost only; needs Docker Compose 2.24+) |
+| Another server | the server's address | `docker-compose.external-db.yml` |
+
+On macOS, MySQL installed with Homebrew or the MySQL installer works as is. Its user must be allowed to connect over TCP from `127.0.0.1` (for example `'sproutai_user'@'%'` or `'sproutai_user'@'127.0.0.1'`), not only through the local socket. Re-running the installer keeps the existing database password, API key pepper and admin password, and adds any settings that are new in `.env.example` (see [Upgrading](#-upgrading)).
 
 **Option B: by hand.**
 ```bash
@@ -273,6 +282,7 @@ docker compose up -d
 * Every setting in `.env.example` that your `.env` doesn't have is appended to the end of `.env`, with its comment, under an `# Added by install.sh on <date>` heading. It lists what it added.
 * Settings that need your own value, such as `GEMINI_API_KEY=<your-gemini-api-key>`, are added **commented out**, so a placeholder is never used as a real key. Uncomment them and fill them in when you use that feature.
 * A setting you commented out yourself (`# KEY=...`) counts as present and isn't added again.
+* If you set up MySQL on the same machine with an earlier installer (`MYSQL_HOST=127.0.0.1` with `COMPOSE_FILE=docker-compose.external-db.yml`), it switches to the setup in the table under [Step 2](#step-2-create-your-env) for your OS. Earlier versions relied on host networking, which doesn't reach MySQL on a Mac.
 * Running it again adds nothing new, so it's safe to run on every upgrade. A full `./install.sh` run does the same check on an existing `.env`.
 
 New settings have defaults in the gateway, so an upgraded gateway also starts with an older `.env`. Adding them makes the new options visible and easy to configure.

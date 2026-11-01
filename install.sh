@@ -209,7 +209,48 @@ report_added_env_vars() {
     fi
 }
 
+# --- Helper Functions: Reaching a MySQL Server Outside docker compose ---
+EXTERNAL_DB_COMPOSE="docker-compose.external-db.yml"
+HOST_NETWORK_COMPOSE="docker-compose.external-db.yml:docker-compose.host-network.yml"
+
+# localhost inside the gateway container is the container itself, not this machine.
+is_this_machine() {
+    case "$1" in
+        localhost|127.0.0.1|::1) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+# Sets DB_HOST and COMPOSE_FILE so the gateway container reaches the MySQL server at $1.
+#   Linux + this machine: host networking, so MySQL can keep listening on 127.0.0.1 only.
+#   macOS / Windows + this machine: Docker Desktop forwards host.docker.internal to it.
+#   Another server: normal container networking.
+configure_external_db() {
+    if is_this_machine "$1"; then
+        if [ "$(uname -s)" = "Linux" ]; then
+            DB_HOST="127.0.0.1"
+            set_env_var "COMPOSE_FILE" "$HOST_NETWORK_COMPOSE"
+        else
+            DB_HOST="host.docker.internal"
+            set_env_var "COMPOSE_FILE" "$EXTERNAL_DB_COMPOSE"
+            log_info "MySQL runs on this machine: the gateway container reaches it at host.docker.internal."
+        fi
+    else
+        DB_HOST="$1"
+        set_env_var "COMPOSE_FILE" "$EXTERNAL_DB_COMPOSE"
+    fi
+}
+
 if [ "$ENV_EXISTED" = true ]; then
+    # Earlier installers used host networking in docker-compose.external-db.yml for MySQL at
+    # 127.0.0.1. That file no longer does (it didn't work with Docker Desktop), so move the setup over.
+    current_host=$(get_env_var "MYSQL_HOST")
+    if [ "$(get_env_var "COMPOSE_FILE")" = "$EXTERNAL_DB_COMPOSE" ] && is_this_machine "$current_host"; then
+        configure_external_db "$current_host"
+        set_env_var "MYSQL_HOST" "$DB_HOST"
+        log_info "Updated the MySQL connection for this machine: MYSQL_HOST=${DB_HOST}, COMPOSE_FILE=$(get_env_var "COMPOSE_FILE")"
+    fi
+
     log_info "Checking ${ENV_FILE} for settings that are new in ${ENV_EXAMPLE}..."
     add_missing_env_vars
     report_added_env_vars
@@ -305,7 +346,7 @@ EOF
         echo "and the user needs all privileges on the database (the gateway creates its tables)."
         default_value=$(get_env_var "MYSQL_HOST")
         if is_unset "$default_value" || [ "$default_value" = "db" ]; then default_value="127.0.0.1"; fi
-        DB_HOST=$(ask "MySQL host" "$default_value")
+        DB_HOST=$(ask "MySQL host (localhost = this machine)" "$default_value")
         default_value=$(get_env_var "MYSQL_PORT")
         DB_PORT=$(ask "MySQL port" "${default_value:-3306}")
         default_value=$(get_env_var "MYSQL_DATABASE")
@@ -325,8 +366,7 @@ esac
 # --- Step 3: Update the .env File ---
 log_info "Updating ${ENV_FILE} with MySQL and Gateway settings..."
 
-# Write Database settings
-set_env_var "MYSQL_HOST" "$DB_HOST"
+# Write Database settings (MYSQL_HOST below, once it's known how the container reaches MySQL)
 set_env_var "MYSQL_PORT" "$DB_PORT"
 set_env_var "MYSQL_DATABASE" "$DB_NAME"
 set_env_var "MYSQL_USER" "$DB_USER"
@@ -336,8 +376,9 @@ set_env_var "MYSQL_PASSWORD" "$DB_PASSWORD"
 if [ "$MYSQL_MODE" = "docker" ]; then
     unset_env_var "COMPOSE_FILE"
 else
-    set_env_var "COMPOSE_FILE" "docker-compose.external-db.yml"
+    configure_external_db "$DB_HOST"
 fi
+set_env_var "MYSQL_HOST" "$DB_HOST"
 
 # Changing the pepper invalidates every issued API key, so an existing one is kept.
 set_env_var "API_KEY_HASH_PEPPER" "$(keep_or_generate "API_KEY_HASH_PEPPER" 32)"

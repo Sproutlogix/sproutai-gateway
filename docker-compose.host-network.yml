@@ -1,0 +1,22 @@
+# Linux only, for MySQL running on the same machine as the gateway. Used together with
+# docker-compose.external-db.yml (install.sh sets this in .env):
+#   COMPOSE_FILE=docker-compose.external-db.yml:docker-compose.host-network.yml
+#
+# The gateway shares the machine's network, so MYSQL_HOST=127.0.0.1 reaches MySQL while
+# MySQL keeps listening on localhost only. The gateway listens on GATEWAY_PORT directly.
+# On macOS and Windows use MYSQL_HOST=host.docker.internal instead of this file.
+# Needs Docker Compose 2.24 or later (for !reset).
+
+services:
+  gateway:
+    network_mode: host
+    ports: !reset []
+    extra_hosts: !reset []
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "${GATEWAY_PORT:-8000}",
+              "--proxy-headers", "--forwarded-allow-ips", "*"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:${GATEWAY_PORT:-8000}/health', timeout=4)"]
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
