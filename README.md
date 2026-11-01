@@ -31,7 +31,7 @@ This public repository contains deployment configurations and setup scripts for 
 ├── docker-compose.yml     # Gateway + MySQL container definition
 ├── docker-compose.external-db.yml  # Gateway only, for a MySQL server you run yourself
 ├── .env.example           # Environment configuration template
-├── install.sh             # Automated installer (generates secrets & admin login, writes .env)
+├── install.sh             # Installer: writes .env (secrets, admin login, database); --upgrade adds new settings
 └── README.md              # Deployment & usage documentation
 ```
 
@@ -65,7 +65,7 @@ chmod +x install.sh
 sudo ./install.sh --mysql host   # or choose up front: --mysql docker | host | existing
 ```
 
-Without the MySQL container, the installer sets `COMPOSE_FILE=docker-compose.external-db.yml` in `.env`, so `docker compose` uses the gateway-only file. That file uses host networking, which needs Linux. Re-running the installer keeps the existing database password, API key pepper and admin password.
+Without the MySQL container, the installer sets `COMPOSE_FILE=docker-compose.external-db.yml` in `.env`, so `docker compose` uses the gateway-only file. That file uses host networking, which needs Linux. Re-running the installer keeps the existing database password, API key pepper and admin password, and adds any settings that are new in `.env.example` (see [Upgrading](#-upgrading)).
 
 **Option B: by hand.**
 ```bash
@@ -262,9 +262,20 @@ Docker Compose-only settings (set in `.env` or your shell): `GATEWAY_PORT` (host
 ## 🔄 Upgrading
 
 ```bash
+git pull                   # latest docker-compose files, .env.example and install.sh
+./install.sh --upgrade     # add settings that are new in .env.example to your .env
 docker compose pull
 docker compose up -d
 ```
+
+`./install.sh --upgrade` only adds settings to `.env`. It doesn't ask about MySQL, doesn't need `sudo`, and never changes a value that is already in `.env`:
+
+* Every setting in `.env.example` that your `.env` doesn't have is appended to the end of `.env`, with its comment, under an `# Added by install.sh on <date>` heading. It lists what it added.
+* Settings that need your own value, such as `GEMINI_API_KEY=<your-gemini-api-key>`, are added **commented out**, so a placeholder is never used as a real key. Uncomment them and fill them in when you use that feature.
+* A setting you commented out yourself (`# KEY=...`) counts as present and isn't added again.
+* Running it again adds nothing new, so it's safe to run on every upgrade. A full `./install.sh` run does the same check on an existing `.env`.
+
+New settings have defaults in the gateway, so an upgraded gateway also starts with an older `.env`. Adding them makes the new options visible and easy to configure.
 
 Database changes are applied automatically when the gateway starts, and your data in the `sproutai_mysql_data` volume is kept. When upgrading from a version without built-in login, add `ADMIN_EMAIL` and `ADMIN_PASSWORD` to your `.env` before restarting. That version's UI API key settings (`VITE_GATEWAY_API_KEY`, `GATEWAY_UI_API_KEY`) are no longer used and can be removed. `API_KEYS_JSON` is also no longer used: keys it created earlier are already stored in the database and keep working, and new keys are created in the web UI (API Keys). You can delete it from `.env`.
 

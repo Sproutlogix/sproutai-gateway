@@ -13,6 +13,8 @@
 #
 # Usage: ./install.sh                  # asks which one to use
 #        ./install.sh --mysql docker   # or host / existing, without asking
+#        ./install.sh --upgrade        # after `git pull`: adds new settings from
+#                                      # .env.example to an existing .env, nothing else
 # ==============================================================================
 
 set -euo pipefail
@@ -28,20 +30,23 @@ log_warn() { echo -e "${YELLOW}[WARN]${NC} $1"; }
 log_error() { echo -e "${RED}[ERROR]${NC} $1"; exit 1; }
 
 usage() {
-    echo "Usage: $0 [--mysql docker|host|existing]"
-    echo "  docker    run MySQL as a container in docker compose (default)"
-    echo "  host      install MySQL Server on this machine (Ubuntu/Debian, run with sudo)"
-    echo "  existing  connect to a MySQL server you already run"
+    echo "Usage: $0 [--mysql docker|host|existing] | --upgrade"
+    echo "  --mysql docker    run MySQL as a container in docker compose (default)"
+    echo "  --mysql host      install MySQL Server on this machine (Ubuntu/Debian, run with sudo)"
+    echo "  --mysql existing  connect to a MySQL server you already run"
+    echo "  --upgrade         only add settings that are new in .env.example to your .env"
 }
 
 # --- Arguments ---
 MYSQL_MODE=""
+UPGRADE_ONLY=false
 while [ $# -gt 0 ]; do
     case "$1" in
         --mysql)
             [ $# -ge 2 ] || { usage; log_error "--mysql needs a value"; }
             MYSQL_MODE="$2"; shift 2 ;;
         --mysql=*) MYSQL_MODE="${1#*=}"; shift ;;
+        --upgrade) UPGRADE_ONLY=true; shift ;;
         -h|--help) usage; exit 0 ;;
         *) usage; log_error "Unknown option: $1" ;;
     esac
@@ -50,6 +55,9 @@ case "$MYSQL_MODE" in
     ""|docker|host|existing) ;;
     *) usage; log_error "--mysql must be docker, host or existing" ;;
 esac
+if [ "$UPGRADE_ONLY" = true ] && [ -n "$MYSQL_MODE" ]; then
+    usage; log_error "--upgrade can't be combined with --mysql"
+fi
 
 # --- Prompt Helpers (read from the terminal, so `curl ... | bash` still works) ---
 HAS_TTY=false
@@ -75,8 +83,13 @@ ask_secret() {
 ENV_FILE=".env"
 ENV_EXAMPLE=".env.example"
 
+[ -f "$ENV_EXAMPLE" ] || log_error "$ENV_EXAMPLE was not found. Run this script from the repository folder."
+
 # Ensure .env exists or create it from .env.example
+ENV_EXISTED=true
 if [ ! -f "$ENV_FILE" ]; then
+    ENV_EXISTED=false
+    [ "$UPGRADE_ONLY" = false ] || log_error "There is no .env to upgrade. Run ./install.sh first."
     if [ -f "$ENV_EXAMPLE" ]; then
         log_info "Creating .env from .env.example..."
         cp "$ENV_EXAMPLE" "$ENV_FILE"
@@ -136,6 +149,80 @@ keep_or_generate() {
         echo "$current"
     fi
 }
+
+# --- Helper Function: Add Settings That Are New in .env.example ---
+# Appends every setting from .env.example that .env doesn't mention yet, with the comment
+# lines above it. Values in .env are never changed. Placeholders such as <your-api-key> are
+# added commented out: a placeholder would otherwise count as a configured value.
+ADDED_VARS=()
+NEEDS_VALUE_VARS=()
+add_missing_env_vars() {
+    local line key value comments="" added_block=false
+    while IFS= read -r line || [ -n "$line" ]; do
+        if [[ "$line" =~ ^[[:space:]]*$ ]]; then
+            comments=""
+            continue
+        fi
+        if [[ "$line" =~ ^([A-Z][A-Z0-9_]*)=(.*)$ ]]; then
+            key="${BASH_REMATCH[1]}"
+            value="${BASH_REMATCH[2]}"
+            # Present, or deliberately commented out by the user (#KEY= or # KEY=)
+            if grep -qE "^#? ?${key}=" "$ENV_FILE"; then
+                comments=""
+                continue
+            fi
+            if [ "$added_block" = false ]; then
+                # Start on a new line even if .env doesn't end with one
+                [ -z "$(tail -c 1 "$ENV_FILE")" ] || echo "" >> "$ENV_FILE"
+                printf '\n# ==============================================================================\n' >> "$ENV_FILE"
+                printf '# Added by install.sh on %s (new in .env.example)\n' "$(date -u +%Y-%m-%d)" >> "$ENV_FILE"
+                printf '# ==============================================================================\n' >> "$ENV_FILE"
+                added_block=true
+            fi
+            if [ -n "$comments" ]; then
+                # A blank line between groups, as in .env.example
+                [ ${#ADDED_VARS[@]} -eq 0 ] || echo "" >> "$ENV_FILE"
+                printf '%s' "$comments" >> "$ENV_FILE"
+            fi
+            comments=""
+            if is_unset "$value" && [ -n "$value" ]; then
+                printf '# %s=%s\n' "$key" "$value" >> "$ENV_FILE"
+                NEEDS_VALUE_VARS+=("$key")
+            else
+                printf '%s=%s\n' "$key" "$value" >> "$ENV_FILE"
+            fi
+            ADDED_VARS+=("$key")
+        elif [[ "$line" == \#* ]]; then
+            comments+="$line"$'\n'
+        fi
+    done < "$ENV_EXAMPLE"
+}
+
+report_added_env_vars() {
+    if [ ${#ADDED_VARS[@]} -eq 0 ]; then
+        log_info "${ENV_FILE} already has every setting in ${ENV_EXAMPLE}."
+        return
+    fi
+    log_info "Added ${#ADDED_VARS[@]} new setting(s) to the end of ${ENV_FILE}: ${ADDED_VARS[*]}"
+    if [ ${#NEEDS_VALUE_VARS[@]} -gt 0 ]; then
+        log_warn "Added commented out because they need your value (uncomment them if you use the feature): ${NEEDS_VALUE_VARS[*]}"
+    fi
+}
+
+if [ "$ENV_EXISTED" = true ]; then
+    log_info "Checking ${ENV_FILE} for settings that are new in ${ENV_EXAMPLE}..."
+    add_missing_env_vars
+    report_added_env_vars
+fi
+
+if [ "$UPGRADE_ONLY" = true ]; then
+    echo ""
+    echo -e "${YELLOW}Next Steps:${NC}"
+    echo "1. Review the new settings at the end of .env:  nano .env"
+    echo "2. Update and restart the gateway:  docker compose pull && docker compose up -d"
+    echo ""
+    exit 0
+fi
 
 # --- Step 1: Choose Where MySQL Runs ---
 if [ -z "$MYSQL_MODE" ]; then
