@@ -29,6 +29,7 @@ This public repository contains deployment configurations and setup scripts for 
 ```text
 .
 ├── docker-compose.yml     # Gateway + MySQL container definition
+├── docker-compose.external-db.yml  # Gateway only, for a MySQL server you run yourself
 ├── .env.example           # Environment configuration template
 ├── install.sh             # Automated installer (generates secrets & admin login, writes .env)
 └── README.md              # Deployment & usage documentation
@@ -41,7 +42,7 @@ This public repository contains deployment configurations and setup scripts for 
 ### Prerequisites
 * Linux / macOS (Ubuntu/Debian recommended for `install.sh`)
 * [Docker](https://docs.docker.com/get-docker/) & Docker Compose
-* `sudo` / root privileges (only if you use `install.sh`)
+* `sudo` / root privileges (only if `install.sh` installs MySQL on the host)
 
 ### Step 1: Clone Repository
 ```bash
@@ -50,12 +51,21 @@ cd ai-gateway
 ```
 
 ### Step 2: Create your `.env`
-**Option A: automated installer (Ubuntu/Debian).** `install.sh` generates random database credentials, a security pepper and the first admin password, and writes them to `.env`. It also installs MySQL Server on the host. You don't need that MySQL for `docker compose`, which runs its own database.
+**Option A: automated installer.** `install.sh` generates random database credentials, a security pepper and the first admin password, and writes them to `.env`. It first asks where MySQL should run:
+
+| Answer | Database | `docker compose up -d` starts |
+| :--- | :--- | :--- |
+| **Add a MySQL container to docker compose** (default) | A MySQL 8.4 container with its data in the `sproutai_mysql_data` volume | Gateway + MySQL |
+| **Install MySQL Server on this machine** (Ubuntu/Debian, needs `sudo`) | MySQL from apt, with the database and user created for you | Gateway only |
+| **Use a MySQL server you already run** (RDS, Azure, another host) | Asks for the host, port, database, user and password. The database and user must already exist. | Gateway only |
 
 ```bash
 chmod +x install.sh
-sudo ./install.sh
+./install.sh                     # asks where MySQL should run
+sudo ./install.sh --mysql host   # or choose up front: --mysql docker | host | existing
 ```
+
+Without the MySQL container, the installer sets `COMPOSE_FILE=docker-compose.external-db.yml` in `.env`, so `docker compose` uses the gateway-only file. That file uses host networking, which needs Linux. Re-running the installer keeps the existing database password, API key pepper and admin password.
 
 **Option B: by hand.**
 ```bash

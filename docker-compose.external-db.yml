@@ -1,0 +1,27 @@
+# Sprout AI Gateway without the bundled MySQL container: the gateway connects to the
+# MySQL server set in .env (MYSQL_HOST, MYSQL_PORT, ...), such as MySQL installed on
+# this machine by install.sh, Amazon RDS or Azure Database for MySQL.
+#
+# install.sh selects this file by writing COMPOSE_FILE=docker-compose.external-db.yml
+# to .env, so plain `docker compose up -d` uses it. Remove that line to go back to the
+# bundled database in docker-compose.yml.
+
+services:
+  gateway:
+    image: ghcr.io/sproutlogix/ai_gateway_core:${GATEWAY_VERSION:-latest}
+    container_name: sproutai-gateway
+    restart: unless-stopped
+    # Host networking, so MYSQL_HOST=127.0.0.1 reaches a MySQL server on this machine
+    # without exposing it on other network interfaces. Linux only.
+    network_mode: host
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "${GATEWAY_PORT:-8000}",
+              "--proxy-headers", "--forwarded-allow-ips", "*"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:${GATEWAY_PORT:-8000}/health', timeout=4)"]
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
+    # Loads the database settings, provider keys, the first admin account and SMTP from .env
+    env_file:
+      - .env

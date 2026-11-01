@@ -1,10 +1,18 @@
 #!/usr/bin/env bash
 
 # ==============================================================================
-# Sprout AI Gateway - MySQL & Environment Auto-Installer
+# Sprout AI Gateway - Environment Installer
 # ==============================================================================
-# Description: Installs MySQL server, generates secure credentials, creates
-#              the first admin login, and updates .env.
+# Description: Sets up the database the gateway uses, generates secure
+#              credentials, creates the first admin login, and updates .env.
+#
+# The database can be:
+#   docker    - a MySQL container started by docker compose (default)
+#   host      - MySQL Server installed on this machine (Ubuntu/Debian, needs sudo)
+#   existing  - a MySQL server you already run (Amazon RDS, Azure, another host, ...)
+#
+# Usage: ./install.sh                  # asks which one to use
+#        ./install.sh --mysql docker   # or host / existing, without asking
 # ==============================================================================
 
 set -euo pipefail
@@ -19,10 +27,49 @@ log_info() { echo -e "${GREEN}[INFO]${NC} $1"; }
 log_warn() { echo -e "${YELLOW}[WARN]${NC} $1"; }
 log_error() { echo -e "${RED}[ERROR]${NC} $1"; exit 1; }
 
-# --- Check Root/Sudo Privileges ---
-if [ "$EUID" -ne 0 ]; then
-  log_error "Please run this script with sudo or as root: sudo ./install.sh"
+usage() {
+    echo "Usage: $0 [--mysql docker|host|existing]"
+    echo "  docker    run MySQL as a container in docker compose (default)"
+    echo "  host      install MySQL Server on this machine (Ubuntu/Debian, run with sudo)"
+    echo "  existing  connect to a MySQL server you already run"
+}
+
+# --- Arguments ---
+MYSQL_MODE=""
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --mysql)
+            [ $# -ge 2 ] || { usage; log_error "--mysql needs a value"; }
+            MYSQL_MODE="$2"; shift 2 ;;
+        --mysql=*) MYSQL_MODE="${1#*=}"; shift ;;
+        -h|--help) usage; exit 0 ;;
+        *) usage; log_error "Unknown option: $1" ;;
+    esac
+done
+case "$MYSQL_MODE" in
+    ""|docker|host|existing) ;;
+    *) usage; log_error "--mysql must be docker, host or existing" ;;
+esac
+
+# --- Prompt Helpers (read from the terminal, so `curl ... | bash` still works) ---
+HAS_TTY=false
+if { : < /dev/tty; } 2>/dev/null; then
+    HAS_TTY=true
 fi
+
+# ask "Question" "default" -> prints the answer (the default when left empty)
+ask() {
+    local answer=""
+    read -r -p "$1 [$2]: " answer < /dev/tty
+    echo "${answer:-$2}"
+}
+
+ask_secret() {
+    local answer=""
+    read -r -s -p "$1: " answer < /dev/tty
+    echo "" > /dev/tty
+    echo "$answer"
+}
 
 # --- File Paths ---
 ENV_FILE=".env"
@@ -41,69 +88,155 @@ fi
 # --- Helper Function: Generate Random Strings ---
 generate_random_string() {
     local length=${1:-24}
-    tr -dc 'A-Za-z0-9' < /dev/urandom | head -c "$length"
+    # cut reads all of its input, so nothing in the pipeline is killed by SIGPIPE (set -o pipefail).
+    head -c 2048 /dev/urandom | LC_ALL=C tr -dc 'A-Za-z0-9' | cut -c "1-${length}"
 }
 
-# --- Step 1: Install MySQL Server ---
-log_info "Checking MySQL installation..."
+# --- Helper Functions: Read / Set / Remove a key in .env ---
+get_env_var() {
+    { grep -E "^${1}=" "$ENV_FILE" || true; } | tail -n 1 | cut -d= -f2-
+}
 
-if ! command -v mysql &> /dev/null; then
-    log_info "MySQL not found. Installing mysql-server..."
-    export DEBIAN_FRONTEND=noninteractive
-    apt-get update -y
-    apt-get install -y mysql-server
-    systemctl enable mysql
-    systemctl start mysql
-else
-    log_info "MySQL is already installed."
-fi
+# A value that still has to be filled in: empty or a <placeholder> from .env.example
+is_unset() {
+    [ -z "$1" ] || [[ "$1" == \<* ]]
+}
 
-# Ensure MySQL service is running
-if ! systemctl is-active --quiet mysql; then
-    log_info "Starting MySQL service..."
-    systemctl start mysql
-fi
-
-# --- Step 2: Generate Credentials ---
-DB_NAME="sproutai_db"
-DB_USER="sproutai_user"
-DB_HOST="localhost"
-DB_PORT="3306"
-DB_PASSWORD=$(generate_random_string 32)
-PEPPER_SECRET=$(generate_random_string 32)
-
-log_info "Generated database credentials and pepper."
-
-# --- Step 3: Configure Database & User in MySQL ---
-log_info "Configuring MySQL database and privileges..."
-
-mysql -u root <<EOF
-CREATE DATABASE IF NOT EXISTS \`${DB_NAME}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
-CREATE USER IF NOT EXISTS '${DB_USER}'@'%' IDENTIFIED BY '${DB_PASSWORD}';
-GRANT ALL PRIVILEGES ON \`${DB_NAME}\`.* TO '${DB_USER}'@'%';
-FLUSH PRIVILEGES;
-EOF
-
-log_info "Database '${DB_NAME}' and user '${DB_USER}' configured successfully."
-
-# --- Step 4: Update the .env File ---
-log_info "Updating ${ENV_FILE} with MySQL and Gateway settings..."
-
-# Helper function to set or replace a key in .env
 set_env_var() {
     local key="$1"
     local value="$2"
-    
+
     # Escape special characters for sed
     local escaped_value
     escaped_value=$(printf '%s\n' "$value" | sed -e 's/[\/&]/\\&/g')
 
     if grep -q "^${key}=" "$ENV_FILE"; then
-        sed -i "s/^${key}=.*/${key}=${escaped_value}/" "$ENV_FILE"
+        # -i.bak works with both GNU sed (Linux) and BSD sed (macOS)
+        sed -i.bak "s/^${key}=.*/${key}=${escaped_value}/" "$ENV_FILE"
+        rm -f "${ENV_FILE}.bak"
     else
-        echo "${key}=${escaped_value}" >> "$ENV_FILE"
+        echo "${key}=${value}" >> "$ENV_FILE"
     fi
 }
+
+unset_env_var() {
+    if grep -q "^${1}=" "$ENV_FILE"; then
+        sed -i.bak "/^${1}=/d" "$ENV_FILE"
+        rm -f "${ENV_FILE}.bak"
+    fi
+}
+
+# Keeps a value that is already set: the database and issued API keys depend on it.
+keep_or_generate() {
+    local current
+    current=$(get_env_var "$1")
+    if is_unset "$current"; then
+        generate_random_string "$2"
+    else
+        echo "$current"
+    fi
+}
+
+# --- Step 1: Choose Where MySQL Runs ---
+if [ -z "$MYSQL_MODE" ]; then
+    if [ "$HAS_TTY" = true ]; then
+        echo ""
+        echo "The gateway stores its data in MySQL."
+        answer=$(ask "Add a MySQL container to docker compose? (y/n)" "y")
+        case "$answer" in
+            [Yy]*) MYSQL_MODE="docker" ;;
+            *)
+                answer=$(ask "Install MySQL Server on this machine instead? (n = use a MySQL server you already run) (y/n)" "y")
+                case "$answer" in
+                    [Yy]*) MYSQL_MODE="host" ;;
+                    *) MYSQL_MODE="existing" ;;
+                esac
+                ;;
+        esac
+    else
+        MYSQL_MODE="docker"
+        log_info "No terminal to ask on; using a MySQL container in docker compose (pass --mysql to choose)."
+    fi
+fi
+
+# --- Step 2: Database Credentials ---
+DB_NAME="sproutai_db"
+DB_USER="sproutai_user"
+DB_PORT="3306"
+# Re-running the installer keeps the existing password: the MySQL data volume or user still has it.
+DB_PASSWORD=$(keep_or_generate "MYSQL_PASSWORD" 32)
+
+case "$MYSQL_MODE" in
+    docker)
+        DB_HOST="db"
+        log_info "Using a MySQL container in docker compose (docker-compose.yml)."
+        ;;
+
+    host)
+        DB_HOST="127.0.0.1"
+        if [ "$EUID" -ne 0 ]; then
+            log_error "Installing MySQL needs root. Run: sudo ./install.sh --mysql host"
+        fi
+
+        log_info "Checking MySQL installation..."
+        if ! command -v mysql &> /dev/null; then
+            command -v apt-get &> /dev/null \
+                || log_error "Installing MySQL is only automated on Ubuntu/Debian. Install it yourself, then run: ./install.sh --mysql existing"
+            log_info "MySQL not found. Installing mysql-server..."
+            export DEBIAN_FRONTEND=noninteractive
+            apt-get update -y
+            apt-get install -y mysql-server
+            systemctl enable mysql
+            systemctl start mysql
+        else
+            log_info "MySQL is already installed."
+        fi
+
+        # Ensure MySQL service is running
+        if ! systemctl is-active --quiet mysql; then
+            log_info "Starting MySQL service..."
+            systemctl start mysql
+        fi
+
+        log_info "Configuring MySQL database and privileges..."
+        # ALTER USER keeps the password in step with .env when the user already existed.
+        mysql -u root <<EOF
+CREATE DATABASE IF NOT EXISTS \`${DB_NAME}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+CREATE USER IF NOT EXISTS '${DB_USER}'@'%' IDENTIFIED BY '${DB_PASSWORD}';
+ALTER USER '${DB_USER}'@'%' IDENTIFIED BY '${DB_PASSWORD}';
+GRANT ALL PRIVILEGES ON \`${DB_NAME}\`.* TO '${DB_USER}'@'%';
+FLUSH PRIVILEGES;
+EOF
+        log_info "Database '${DB_NAME}' and user '${DB_USER}' configured successfully."
+        ;;
+
+    existing)
+        [ "$HAS_TTY" = true ] \
+            || log_error "--mysql existing asks for the server's details, so it needs a terminal. Or fill in the MYSQL_* settings in .env yourself."
+        echo ""
+        echo "Enter your MySQL server's details. The database and user must already exist,"
+        echo "and the user needs all privileges on the database (the gateway creates its tables)."
+        default_value=$(get_env_var "MYSQL_HOST")
+        if is_unset "$default_value" || [ "$default_value" = "db" ]; then default_value="127.0.0.1"; fi
+        DB_HOST=$(ask "MySQL host" "$default_value")
+        default_value=$(get_env_var "MYSQL_PORT")
+        DB_PORT=$(ask "MySQL port" "${default_value:-3306}")
+        default_value=$(get_env_var "MYSQL_DATABASE")
+        if is_unset "$default_value"; then default_value="$DB_NAME"; fi
+        DB_NAME=$(ask "Database name" "$default_value")
+        default_value=$(get_env_var "MYSQL_USER")
+        if is_unset "$default_value"; then default_value="$DB_USER"; fi
+        DB_USER=$(ask "Database user" "$default_value")
+        DB_PASSWORD=$(ask_secret "Password for ${DB_USER}")
+        [ -n "$DB_PASSWORD" ] || log_error "A database password is required."
+        if [[ "$DB_PASSWORD" == *'$'* ]]; then
+            log_warn "The password contains '\$', which docker compose treats as a variable in .env. Write it as \$\$ in .env."
+        fi
+        ;;
+esac
+
+# --- Step 3: Update the .env File ---
+log_info "Updating ${ENV_FILE} with MySQL and Gateway settings..."
 
 # Write Database settings
 set_env_var "MYSQL_HOST" "$DB_HOST"
@@ -111,18 +244,27 @@ set_env_var "MYSQL_PORT" "$DB_PORT"
 set_env_var "MYSQL_DATABASE" "$DB_NAME"
 set_env_var "MYSQL_USER" "$DB_USER"
 set_env_var "MYSQL_PASSWORD" "$DB_PASSWORD"
-set_env_var "API_KEY_HASH_PEPPER" "$PEPPER_SECRET"
+
+# docker compose reads COMPOSE_FILE from .env: without the bundled database it uses the gateway-only file.
+if [ "$MYSQL_MODE" = "docker" ]; then
+    unset_env_var "COMPOSE_FILE"
+else
+    set_env_var "COMPOSE_FILE" "docker-compose.external-db.yml"
+fi
+
+# Changing the pepper invalidates every issued API key, so an existing one is kept.
+set_env_var "API_KEY_HASH_PEPPER" "$(keep_or_generate "API_KEY_HASH_PEPPER" 32)"
 
 # First admin account for the web UI (only used when the gateway has no users yet).
 # Keep an existing password unless it is still the placeholder.
-CURRENT_ADMIN_PASSWORD=$(grep -E "^ADMIN_PASSWORD=" "$ENV_FILE" | cut -d= -f2- || true)
-if [ -z "$CURRENT_ADMIN_PASSWORD" ] || [[ "$CURRENT_ADMIN_PASSWORD" == \<* ]]; then
+CURRENT_ADMIN_PASSWORD=$(get_env_var "ADMIN_PASSWORD")
+if is_unset "$CURRENT_ADMIN_PASSWORD"; then
     ADMIN_PASSWORD=$(generate_random_string 20)
     set_env_var "ADMIN_PASSWORD" "$ADMIN_PASSWORD"
 else
     ADMIN_PASSWORD="(unchanged, see ADMIN_PASSWORD in .env)"
 fi
-ADMIN_EMAIL=$(grep -E "^ADMIN_EMAIL=" "$ENV_FILE" | cut -d= -f2- || true)
+ADMIN_EMAIL=$(get_env_var "ADMIN_EMAIL")
 if [ -z "$ADMIN_EMAIL" ]; then
     ADMIN_EMAIL="admin@example.com"
     set_env_var "ADMIN_EMAIL" "$ADMIN_EMAIL"
@@ -130,13 +272,20 @@ fi
 
 log_info ".env file successfully configured!"
 
-# --- Step 5: Final Summary ---
+# --- Step 4: Final Summary ---
+case "$MYSQL_MODE" in
+    docker) DB_SUMMARY="MySQL container in docker compose" ;;
+    host) DB_SUMMARY="MySQL Server on this machine (${DB_HOST}:${DB_PORT})" ;;
+    existing) DB_SUMMARY="your MySQL server (${DB_HOST}:${DB_PORT})" ;;
+esac
+
 echo ""
 echo -e "${GREEN}======================================================================${NC}"
 echo -e "${GREEN}      Installation Complete!                                           ${NC}"
 echo -e "${GREEN}======================================================================${NC}"
 echo ""
 echo "Configured Settings in .env:"
+echo "  - Database:             $DB_SUMMARY"
 echo "  - MYSQL_DATABASE:       $DB_NAME"
 echo "  - MYSQL_USER:           $DB_USER"
 echo "  - ADMIN_EMAIL:          $ADMIN_EMAIL"
