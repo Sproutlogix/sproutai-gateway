@@ -255,6 +255,7 @@ See `.env.example` for the full list.
 | `AWS_BEARER_TOKEN_BEDROCK` | AWS Bedrock authentication token | *None* | No |
 | `OPENAI_API_KEY` | OpenAI API Secret Key | *None* | No |
 | `ANTHROPIC_API_KEY` | Anthropic API Secret Key | *None* | No |
+| `ANTHROPIC_WORKSPACE_ID` | Workspace ID (`wrkspc_...`) to use with an organization API key that isn't scoped to a workspace. Sent as the `anthropic-workspace-id` header. | *None* | No |
 | `AZURE_OPENAI_ENDPOINT` | Azure OpenAI Resource Endpoint | *None* | No |
 | `AZURE_OPENAI_API_KEY` | Azure OpenAI Key | *None* | No |
 | `ENFORCE_MONTHLY_BUDGETS` | Block requests at 100% of a key's budget or token limit | `false` | No |
